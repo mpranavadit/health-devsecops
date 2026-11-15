@@ -139,12 +139,7 @@ pipeline {
 
                 $manifest = $manifest.Replace(
                     "imagePullPolicy: Always",
-                    "imagePullPolicy: Never"
-                )
-
-                $manifest = $manifest.Replace(
-                    "imagePullPolicy: IfNotPresent",
-                    "imagePullPolicy: Never"
+                    "imagePullPolicy: IfNotPresent"
                 )
 
                 if ($manifest -notmatch [regex]::Escape($env:IMAGE)) {
@@ -323,3 +318,4 @@ pipeline {
         }
     }
 }
+

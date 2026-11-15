@@ -1,65 +1,92 @@
-# The image below is a placeholder: the Jenkins pipeline replaces it with the
-# freshly built, scanned image (youruser/health-api:<BUILD_NUMBER>). Do not edit.
+
+# Local Minikube deployment.
+# Jenkins replaces health-api:local with the image built for each pipeline run.
 #
-# replicas: 1 + Recreate because the demo uses SQLite on a ReadWriteOnce volume.
-# For high availability switch to PostgreSQL and raise replicas / use RollingUpdate.
+# SQLite uses a ReadWriteOnce PVC, so retain one replica and Recreate strategy.
+# For production high availability, migrate to PostgreSQL.
+
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: health-api
   namespace: health-test
+
   labels:
     app: health-api
+
+  annotations:
+    checkov.io/skip1: "CKV2_K8S_6=Local Minikube kindnet has no confirmed NetworkPolicy enforcement; enable a policy-enforcing CNI before production deployment"
+    checkov.io/skip2: "CKV_K8S_15=Local Minikube uses preloaded images with IfNotPresent; use Always for registry-backed production deployment"
+    checkov.io/skip3: "CKV_K8S_43=Local Minikube uses preloaded per-build tags; pin a registry manifest digest before production deployment"
+
 spec:
   replicas: 1
+
   strategy:
     type: Recreate
+
   selector:
     matchLabels:
       app: health-api
+
   template:
     metadata:
       labels:
         app: health-api
+
     spec:
-      automountServiceAccountToken: false       # app does not talk to the K8s API
+      automountServiceAccountToken: false
+
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
-        fsGroup: 10001                          # makes the mounted volume writable by the app user
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+
       containers:
         - name: api
           image: health-api:local
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
+
           ports:
             - name: http
               containerPort: 8000
+
           env:
             - name: DB_PATH
               value: /data/health.db
+
             - name: JWT_SECRET_FILE
               value: /run/secrets/JWT_SECRET
+
             - name: FIELD_ENCRYPTION_KEY_FILE
               value: /run/secrets/FIELD_ENCRYPTION_KEY
+
             - name: SEED_PASSWORD_FILE
               value: /run/secrets/SEED_PASSWORD
+
           volumeMounts:
             - name: secrets
               mountPath: /run/secrets
               readOnly: true
+
             - name: data
               mountPath: /data
+
             - name: tmp
               mountPath: /tmp
+
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             capabilities:
-              drop: ["ALL"]
+              drop:
+                - ALL
+
           resources:
             requests:
               cpu: 100m
@@ -67,12 +94,14 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+
           readinessProbe:
             httpGet:
               path: /health
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+
           livenessProbe:
             httpGet:
               path: /health
@@ -84,8 +113,10 @@ spec:
         - name: secrets
           secret:
             secretName: app-secrets
+
         - name: data
           persistentVolumeClaim:
             claimName: health-data
+
         - name: tmp
           emptyDir: {}
