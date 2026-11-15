@@ -95,6 +95,25 @@ pipeline {
             }
         }
 
+        // TEMPORARY DIAGNOSTIC STAGE
+        stage('Test Docker Hub Credentials') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_PASS'
+                    )
+                ]) {
+                    powershell '''
+                    Write-Host "Docker Hub username: $env:DH_USER"
+                    Write-Host "Token length: $($env:DH_PASS.Length)"
+                    Write-Host "Token starts/ends with whitespace: $([bool]($env:DH_PASS -ne $env:DH_PASS.Trim()))"
+                    '''
+                }
+            }
+        }
+
         stage('Push Image and Capture Digest') {
             steps {
                 withCredentials([
@@ -110,8 +129,6 @@ pipeline {
                     Write-Host "Docker Hub username: $env:DH_USER"
                     Write-Host "Docker Hub token present: $([bool]$env:DH_PASS)"
 
-                    # Login using UTF-8 bytes to avoid PowerShell
-                    # native-command stdin encoding problems.
                     $dockerPath = (Get-Command docker.exe).Source
 
                     $processInfo = New-Object System.Diagnostics.ProcessStartInfo
