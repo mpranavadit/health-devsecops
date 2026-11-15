@@ -222,16 +222,36 @@ pipeline {
                 try {
                     Start-Sleep -Seconds 5
 
-                    docker run --rm -v "${env:WORKSPACE}\\zap-out:/zap/wrk" `
+                    Write-Host "Starting OWASP ZAP baseline scan..."
+
+                    # Allow Docker's native output and capture its exit code.
+                    $ErrorActionPreference = "Continue"
+
+                    docker run --rm -v "${env:WORKSPACE}\zap-out:/zap/wrk" `
                         ghcr.io/zaproxy/zaproxy:stable `
                         zap-baseline.py -t http://host.docker.internal:8000 `
                         -r zap-report.html
 
                     $zapExit = $LASTEXITCODE
 
+                    Write-Host "OWASP ZAP exit code: $zapExit"
+
                     if ($zapExit -eq 1 -or $zapExit -ge 3) {
-                        throw "OWASP ZAP security scan failed"
+                        throw "OWASP ZAP security scan failed with exit code $zapExit"
                     }
+
+                    if ($zapExit -eq 2) {
+                        Write-Warning "OWASP ZAP found warnings. Review the archived report."
+                    }
+
+                    if ($zapExit -ne 0 -and $zapExit -ne 2) {
+                        throw "Unexpected OWASP ZAP exit code: $zapExit"
+                    }
+
+                    # Prevent an accepted ZAP warning code from propagating.
+                    $global:LASTEXITCODE = 0
+
+                    Write-Host "OWASP ZAP scan completed. Continuing pipeline."
                 }
                 finally {
                     Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue
@@ -318,4 +338,3 @@ pipeline {
         }
     }
 }
-
