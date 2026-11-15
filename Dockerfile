@@ -13,7 +13,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN rm -f /usr/local/lib/python3.11/site-packages/pip/_vendor/bom.cdx.json
 # Install application dependencies
 COPY src/requirements.txt .
-RUN python -m pip install --no-cache-dir --index-url https://pypi.org/simple -r requirements.txt
+RUN python -m pip install --no-cache-dir --retries 10 --timeout 120 --index-url https://pypi.org/simple -r requirements.txt
 
 COPY src/ .
 
