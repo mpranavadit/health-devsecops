@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: health-api
+  namespace: health-test
   labels:
     app: health-api
 spec:
@@ -10,5 +11,5 @@ spec:
     app: health-api
   ports:
     - name: http
-      port: 80            # what the Ingress / other pods call
-      targetPort: 8000    # where the container listens
+      port: 80
+      targetPort: 8000
