@@ -33,7 +33,7 @@ spec:
       containers:
         - name: api
           image: health-api:local
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8000
