@@ -86,7 +86,7 @@ pipeline {
         stage('SAST - Bandit') {
             steps {
                 bat '''
-                python -m pip uninstall bandit
+                python -m pip uninstall -y bandit
                 python -m pip install --no-cache-dir bandit==1.9.4
                 python -m bandit -r src -ll 
                 '''
@@ -97,7 +97,7 @@ pipeline {
             steps {
                 bat '''
                 python -m pip install pip-audit
-                python -m pip_audit -r src/requirements.txt
+                python -m pip_audit -r src/requirements.txt --timeout 60
                 '''
             }
         }
