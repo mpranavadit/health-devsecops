@@ -227,7 +227,7 @@ pipeline {
                     # Allow Docker's native output and capture its exit code.
                     $ErrorActionPreference = "Continue"
 
-                    docker run --rm -v "${env:WORKSPACE}\zap-out:/zap/wrk" `
+                    docker run --rm -v "$($env:WORKSPACE -replace '\\','/')/zap-out:/zap/wrk" `
                         ghcr.io/zaproxy/zaproxy:stable `
                         zap-baseline.py -t http://host.docker.internal:8000 `
                         -r zap-report.html
