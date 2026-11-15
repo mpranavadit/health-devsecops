@@ -1,36 +1,3 @@
-// =====================================================================
-//  DevSecOps pipeline - Healthcare Appointment API (container port 8000)
-//
-//  Assumptions:
-//   * Jenkins runs directly on the host (NOT inside a container) with
-//     docker + kubectl on PATH; the 'jenkins' user is in the docker group.
-//   * Jenkins credentials:
-//        dockerhub  -> Username with password (Docker Hub user + access token)
-//        kubeconfig -> Secret file (see scripts/make-jenkins-kubeconfig.sh)
-//   * Change DOCKERHUB_USER below.
-// =====================================================================
-
-// Run a block with KUBECONFIG pointing at the Jenkins kubeconfig credential
-def withKube(Closure body) {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-        body()
-    }
-}
-
-// Apply manifests to a namespace with the freshly built image; roll back on failure
-def deployTo(String ns) {
-    try {
-        sh """
-            kubectl -n ${ns} apply -f k8s/app/pvc.yaml -f k8s/app/service.yaml
-            sed "s|your-dockerhub-username/health-api:0.0.0|\$IMAGE|" k8s/app/deployment.yaml | kubectl -n ${ns} apply -f -
-            kubectl -n ${ns} rollout status deployment/health-api --timeout=180s
-        """
-    } catch (err) {
-        sh "kubectl -n ${ns} rollout undo deployment/health-api || true"
-        throw err
-    }
-}
-
 
 pipeline {
     agent {
@@ -39,7 +6,7 @@ pipeline {
 
     options {
         timestamps()
-        timeout(time: 60, unit: 'MINUTES')
+        timeout(time: 90, unit: 'MINUTES')
         disableConcurrentBuilds()
     }
 
@@ -70,9 +37,8 @@ pipeline {
             steps {
                 bat '''
                 python -m pip uninstall -y jwt
-                python -m pip install --force-reinstall PyJWT==2.10.1
                 python -m pip install -r src/requirements.txt -r requirements-dev.txt
-                python -c "import jwt; print(jwt.__file__); assert hasattr(jwt, 'encode')"
+                python -c "import jwt; assert hasattr(jwt, 'encode')"
                 python -m pytest -q -p no:cacheprovider --junitxml=test-results.xml
                 '''
             }
@@ -88,7 +54,7 @@ pipeline {
                 bat '''
                 python -m pip uninstall -y bandit
                 python -m pip install --no-cache-dir bandit==1.9.4
-                python -m bandit -r src -ll 
+                python -m bandit -r src -ll
                 '''
             }
         }
@@ -102,11 +68,11 @@ pipeline {
             }
         }
 
-        stage('Config Scan - Checkov') {
+        stage('Config Scan - Dockerfile') {
             steps {
                 bat '''
                 docker run --rm -v "%WORKSPACE%:/src" bridgecrew/checkov:latest ^
-                  -d /src --framework dockerfile kubernetes --quiet --compact
+                  -d /src --framework dockerfile --quiet --compact
                 '''
             }
         }
@@ -128,7 +94,7 @@ pipeline {
             }
         }
 
-        stage('Push Image') {
+        stage('Push Image and Capture Digest') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -137,12 +103,94 @@ pipeline {
                         passwordVariable: 'DH_PASS'
                     )
                 ]) {
-                    bat '''
-                    echo %DH_PASS%| docker login -u %DH_USER% --password-stdin
-                    docker push %IMAGE%
-                    docker logout
+                    powershell '''
+                    $ErrorActionPreference = "Stop"
+
+                    $env:DH_PASS | docker login --username $env:DH_USER --password-stdin
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Docker Hub login failed"
+                    }
+
+                    try {
+                        $pushOutput = & docker push $env:IMAGE 2>&1
+                        $pushExit = $LASTEXITCODE
+
+                        $pushOutput | ForEach-Object { Write-Host $_ }
+
+                        if ($pushExit -ne 0) {
+                            throw "Docker image push failed"
+                        }
+
+                        $digest = $null
+
+                        foreach ($line in $pushOutput) {
+                            if ("$line" -match 'digest:\\s*(sha256:[0-9a-f]{64})') {
+                                $digest = $Matches[1]
+                            }
+                        }
+
+                        if (-not $digest) {
+                            throw "Could not retrieve Docker image digest"
+                        }
+
+                        $imageRef = "$env:DOCKERHUB_USER/health-api@$digest"
+
+                        [System.IO.File]::WriteAllText(
+                            "image-ref.txt",
+                            $imageRef,
+                            [System.Text.Encoding]::ASCII
+                        )
+
+                        Write-Host "Image digest captured successfully."
+                        Write-Host $imageRef
+                    }
+                    finally {
+                        docker logout
+                    }
                     '''
                 }
+
+                script {
+                    env.IMAGE_REF = readFile('image-ref.txt').trim()
+                    echo "Immutable deployment image: ${env.IMAGE_REF}"
+                }
+            }
+        }
+
+        stage('Prepare Kubernetes Manifest') {
+            steps {
+                powershell '''
+                $ErrorActionPreference = "Stop"
+
+                $manifest = Get-Content k8s/app/deployment.yaml -Raw
+
+                $manifest = $manifest.Replace(
+                    "health-api:local",
+                    $env:IMAGE_REF
+                )
+
+                if ($manifest -notmatch [regex]::Escape($env:IMAGE_REF)) {
+                    throw "Digest image replacement failed"
+                }
+
+                New-Item -ItemType Directory -Force ci-manifests | Out-Null
+
+                [System.IO.File]::WriteAllText(
+                    "ci-manifests/deployment.yaml",
+                    $manifest,
+                    [System.Text.UTF8Encoding]::new($false)
+                )
+                '''
+            }
+        }
+
+        stage('Config Scan - Kubernetes') {
+            steps {
+                bat '''
+                docker run --rm -v "%WORKSPACE%:/src" bridgecrew/checkov:latest ^
+                  -f /src/ci-manifests/deployment.yaml ^
+                  --framework kubernetes --quiet --compact
+                '''
             }
         }
 
@@ -152,19 +200,19 @@ pipeline {
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')
                 ]) {
                     powershell '''
+                    $ErrorActionPreference = "Stop"
+
                     kubectl apply -f k8s/app/pvc.yaml -n health-test
+                    if ($LASTEXITCODE -ne 0) { throw "TEST PVC failed" }
+
                     kubectl apply -f k8s/app/service.yaml -n health-test
+                    if ($LASTEXITCODE -ne 0) { throw "TEST Service failed" }
 
-                    $manifest = Get-Content k8s/app/deployment.yaml -Raw
-                    $manifest = $manifest.Replace("health-api:local", $env:IMAGE)
-                    $manifest = $manifest.Replace("your-dockerhub-username/health-api:0.0.0", $env:IMAGE)
-                    $manifest = $manifest -replace "imagePullPolicy: IfNotPresent", "imagePullPolicy: Always"
+                    kubectl apply -f ci-manifests/deployment.yaml -n health-test
+                    if ($LASTEXITCODE -ne 0) { throw "TEST Deployment failed" }
 
-                    $manifest | Set-Content deployment-ci.yaml
-                    kubectl apply -f deployment-ci.yaml -n health-test
                     kubectl rollout status deployment/health-api -n health-test --timeout=180s
-
-                    if ($LASTEXITCODE -ne 0) { throw "TEST deployment failed" }
+                    if ($LASTEXITCODE -ne 0) { throw "TEST rollout failed" }
                     '''
                 }
             }
@@ -173,6 +221,8 @@ pipeline {
         stage('DAST - OWASP ZAP') {
             steps {
                 powershell '''
+                $ErrorActionPreference = "Stop"
+
                 New-Item -ItemType Directory -Force zap-out | Out-Null
 
                 $pf = Start-Process kubectl `
@@ -187,7 +237,9 @@ pipeline {
                         zap-baseline.py -t http://host.docker.internal:8000 `
                         -r zap-report.html
 
-                    if ($LASTEXITCODE -eq 1 -or $LASTEXITCODE -ge 3) {
+                    $zapExit = $LASTEXITCODE
+
+                    if ($zapExit -eq 1 -or $zapExit -ge 3) {
                         throw "OWASP ZAP security scan failed"
                     }
                 }
@@ -211,19 +263,43 @@ pipeline {
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')
                 ]) {
                     powershell '''
+                    $ErrorActionPreference = "Stop"
+
+                    $deployment = Get-Content ci-manifests/deployment.yaml -Raw
+                    $deployment = $deployment.Replace(
+                        "namespace: health-test",
+                        "namespace: health-prod"
+                    )
+
+                    $service = Get-Content k8s/app/service.yaml -Raw
+                    $service = $service.Replace(
+                        "namespace: health-test",
+                        "namespace: health-prod"
+                    )
+
+                    [System.IO.File]::WriteAllText(
+                        "deployment-prod.yaml",
+                        $deployment,
+                        [System.Text.UTF8Encoding]::new($false)
+                    )
+
+                    [System.IO.File]::WriteAllText(
+                        "service-prod.yaml",
+                        $service,
+                        [System.Text.UTF8Encoding]::new($false)
+                    )
+
                     kubectl apply -f k8s/app/pvc.yaml -n health-prod
-                    kubectl apply -f k8s/app/service.yaml -n health-prod
+                    if ($LASTEXITCODE -ne 0) { throw "PROD PVC failed" }
 
-                    $manifest = Get-Content k8s/app/deployment.yaml -Raw
-                    $manifest = $manifest.Replace("health-api:local", $env:IMAGE)
-                    $manifest = $manifest.Replace("your-dockerhub-username/health-api:0.0.0", $env:IMAGE)
-                    $manifest = $manifest -replace "imagePullPolicy: IfNotPresent", "imagePullPolicy: Always"
+                    kubectl apply -f service-prod.yaml -n health-prod
+                    if ($LASTEXITCODE -ne 0) { throw "PROD Service failed" }
 
-                    $manifest | Set-Content deployment-prod.yaml
                     kubectl apply -f deployment-prod.yaml -n health-prod
-                    kubectl rollout status deployment/health-api -n health-prod --timeout=180s
+                    if ($LASTEXITCODE -ne 0) { throw "PROD Deployment failed" }
 
-                    if ($LASTEXITCODE -ne 0) { throw "PROD deployment failed" }
+                    kubectl rollout status deployment/health-api -n health-prod --timeout=180s
+                    if ($LASTEXITCODE -ne 0) { throw "PROD rollout failed" }
                     '''
                 }
             }
@@ -239,6 +315,3 @@ pipeline {
         }
     }
 }
-
-
-        
