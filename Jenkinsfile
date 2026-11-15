@@ -132,7 +132,7 @@ pipeline {
                         $digest = $null
 
                         foreach ($line in $pushOutput) {
-                            if ("$line" -match 'digest:\s*(sha256:[0-9a-f]{64})'') {
+                            if ("$line" -match 'digest:\s*(sha256:[0-9a-f]{64})') {
                                 $digest = $Matches[1]
                             }
                         }
