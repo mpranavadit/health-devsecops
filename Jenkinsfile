@@ -237,20 +237,4 @@ pipeline {
 }
 
 
-        // 7. Production only from main, and only after a human approves
-        stage('Approve & Deploy to PROD') {
-            when { expression { env.GIT_BRANCH ==~ /(origin\/)?main/ } }
-            steps {
-                timeout(time: 30, unit: 'MINUTES') {
-                    input message: "All security gates passed for ${env.IMAGE}. Deploy to PRODUCTION?", ok: 'Deploy'
-                }
-                script { withKube { deployTo('health-prod') } }
-            }
-        }
-    }
-
-    post {
-        success { echo "Pipeline passed all security gates. Image: ${env.IMAGE}" }
-        failure { echo 'Pipeline BLOCKED by a security gate or build error. Nothing reached production.' }
-    }
-}
+        
