@@ -9,6 +9,8 @@ metadata:
   name: health-api
   labels:
     app: health-api
+  annotations:
+  checkov.io/skip1: CKV_K8S_21=Namespace is assigned by Jenkins during deployment using kubectl -n
 spec:
   replicas: 1
   strategy:
