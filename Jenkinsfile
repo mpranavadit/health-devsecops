@@ -224,13 +224,17 @@ pipeline {
 
                     Write-Host "Starting OWASP ZAP baseline scan..."
 
-                    # Allow Docker's native output and capture its exit code.
+                    # Allow Docker native output and capture its exit code.
                     $ErrorActionPreference = "Continue"
 
-                    docker run --rm -v "$($env:WORKSPACE -replace '\\','/')/zap-out:/zap/wrk" `
+                    # Resolve the Windows workspace directory.
+                    $zapOutput = (Resolve-Path "zap-out").Path
+
+                    # Mount the report directory into the ZAP container.
+                    docker run --rm --mount "type=bind,source=$zapOutput,target=/zap/wrk" `
                         ghcr.io/zaproxy/zaproxy:stable `
                         zap-baseline.py -t http://host.docker.internal:8000 `
-                        -r zap-report.html
+                        -r /zap/wrk/zap-report.html
 
                     $zapExit = $LASTEXITCODE
 
@@ -248,7 +252,7 @@ pipeline {
                         throw "Unexpected OWASP ZAP exit code: $zapExit"
                     }
 
-                    # Prevent an accepted ZAP warning code from propagating.
+                    # Prevent an accepted warning code from propagating.
                     $global:LASTEXITCODE = 0
 
                     Write-Host "OWASP ZAP scan completed. Continuing pipeline."
