@@ -86,8 +86,9 @@ pipeline {
         stage('SAST - Bandit') {
             steps {
                 bat '''
-                python -m pip install bandit
-                python -m bandit -r src -ll
+                python -m pip uninstall bandit
+                python -m pip install --no-cache-dir bandit==1.9.4
+                python -m bandit -r src -ll 
                 '''
             }
         }
