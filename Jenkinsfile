@@ -107,23 +107,59 @@ pipeline {
                     powershell '''
                     $ErrorActionPreference = "Stop"
 
-                    Write-Host "Docher Hub username : $env:DH_USER"
-                    Write-Host "Docker Hub token present : $([bool])$env:DH_PASS"
+                    Write-Host "Docker Hub username: $env:DH_USER"
+                    Write-Host "Docker Hub token present: $([bool]$env:DH_PASS)"
 
-                    $LoginOutput = $env:DH_PASS |docker login --username $env:DH_USER --password-stdin 2>&1
-                    $loginExit = $LASTEXITCODE
+                    # Login using UTF-8 bytes to avoid PowerShell
+                    # native-command stdin encoding problems.
+                    $dockerPath = (Get-Command docker.exe).Source
 
-                    $loginOutput | ForEach-Object { Write-Host $_ }
+                    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $processInfo.FileName = $dockerPath
+                    $processInfo.Arguments = "login --username `"$env:DH_USER`" --password-stdin"
+                    $processInfo.UseShellExecute = $false
+                    $processInfo.CreateNoWindow = $true
+                    $processInfo.RedirectStandardInput = $true
+                    $processInfo.RedirectStandardOutput = $true
+                    $processInfo.RedirectStandardError = $true
 
-                    if ($loginExit -ne 0) {
-                        throw "Docker Hub login failed with exit code $loginExit"
+                    $process = New-Object System.Diagnostics.Process
+                    $process.StartInfo = $processInfo
+
+                    [void]$process.Start()
+
+                    $tokenBytes = [System.Text.Encoding]::UTF8.GetBytes($env:DH_PASS + "`n")
+                    $process.StandardInput.BaseStream.Write(
+                        $tokenBytes, 0, $tokenBytes.Length
+                    )
+                    $process.StandardInput.Close()
+
+                    $loginOutput = $process.StandardOutput.ReadToEnd()
+                    $loginError = $process.StandardError.ReadToEnd()
+
+                    $process.WaitForExit()
+
+                    if ($loginOutput) {
+                        Write-Host $loginOutput
                     }
+
+                    if ($loginError) {
+                        Write-Host $loginError
+                    }
+
+                    if ($process.ExitCode -ne 0) {
+                        throw "Docker Hub login failed with exit code $($process.ExitCode)"
+                    }
+
+                    Write-Host "Docker Hub login successful."
 
                     try {
                         $pushOutput = & docker push $env:IMAGE 2>&1
                         $pushExit = $LASTEXITCODE
 
-                        $pushOutput | ForEach-Object { Write-Host $_ }
+                        $pushOutput | ForEach-Object {
+                            Write-Host $_
+                        }
 
                         if ($pushExit -ne 0) {
                             throw "Docker image push failed"
@@ -211,16 +247,24 @@ pipeline {
                     $ErrorActionPreference = "Stop"
 
                     kubectl apply -f k8s/app/pvc.yaml -n health-test
-                    if ($LASTEXITCODE -ne 0) { throw "TEST PVC failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "TEST PVC failed"
+                    }
 
                     kubectl apply -f k8s/app/service.yaml -n health-test
-                    if ($LASTEXITCODE -ne 0) { throw "TEST Service failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "TEST Service failed"
+                    }
 
                     kubectl apply -f ci-manifests/deployment.yaml -n health-test
-                    if ($LASTEXITCODE -ne 0) { throw "TEST Deployment failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "TEST Deployment failed"
+                    }
 
                     kubectl rollout status deployment/health-api -n health-test --timeout=180s
-                    if ($LASTEXITCODE -ne 0) { throw "TEST rollout failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "TEST rollout failed"
+                    }
                     '''
                 }
             }
@@ -274,12 +318,14 @@ pipeline {
                     $ErrorActionPreference = "Stop"
 
                     $deployment = Get-Content ci-manifests/deployment.yaml -Raw
+
                     $deployment = $deployment.Replace(
                         "namespace: health-test",
                         "namespace: health-prod"
                     )
 
                     $service = Get-Content k8s/app/service.yaml -Raw
+
                     $service = $service.Replace(
                         "namespace: health-test",
                         "namespace: health-prod"
@@ -298,16 +344,24 @@ pipeline {
                     )
 
                     kubectl apply -f k8s/app/pvc.yaml -n health-prod
-                    if ($LASTEXITCODE -ne 0) { throw "PROD PVC failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "PROD PVC failed"
+                    }
 
                     kubectl apply -f service-prod.yaml -n health-prod
-                    if ($LASTEXITCODE -ne 0) { throw "PROD Service failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "PROD Service failed"
+                    }
 
                     kubectl apply -f deployment-prod.yaml -n health-prod
-                    if ($LASTEXITCODE -ne 0) { throw "PROD Deployment failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "PROD Deployment failed"
+                    }
 
                     kubectl rollout status deployment/health-api -n health-prod --timeout=180s
-                    if ($LASTEXITCODE -ne 0) { throw "PROD rollout failed" }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "PROD rollout failed"
+                    }
                     '''
                 }
             }
@@ -318,6 +372,7 @@ pipeline {
         success {
             echo 'Healthcare DevSecOps pipeline completed successfully!'
         }
+
         failure {
             echo 'Pipeline failed. Check the stage logs.'
         }
