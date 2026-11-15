@@ -47,7 +47,7 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_USER = 'your-dockerhub-username'          // <-- CHANGE THIS
+        DOCKERHUB_USER = 'pranav4dit'          // <-- CHANGE THIS
         IMAGE          = "${DOCKERHUB_USER}/health-api:${BUILD_NUMBER}"
         TEST_PORT      = '8000'   // local port used by port-forward during DAST (Jenkins itself uses 8080)
     }
