@@ -69,7 +69,11 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 bat '''
+                bat '''
+                python -m pip uninstall -y jwt
+                python -m pip install --force-reinstall PyJWT==2.10.1
                 python -m pip install -r src/requirements.txt -r requirements-dev.txt
+                python -c "import jwt; print(jwt.__file__); assert hasattr(jwt, 'encode')"
                 python -m pytest -q -p no:cacheprovider --junitxml=test-results.xml
                 '''
             }
