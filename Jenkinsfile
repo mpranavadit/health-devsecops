@@ -31,158 +31,211 @@ def deployTo(String ns) {
     }
 }
 
+
 pipeline {
-    agent any
+    agent {
+        label 'windows-docker'
+    }
 
     options {
         timestamps()
         timeout(time: 60, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
         disableConcurrentBuilds()
     }
 
-    parameters {
-        booleanParam(name: 'RUN_SONAR', defaultValue: false,
-                     description: 'Run SonarQube SAST (needs a SonarQube server + Jenkins plugin, server name "sonar")')
-    }
-
     environment {
-        DOCKERHUB_USER = 'pranav4dit'          // <-- CHANGE THIS
-        IMAGE          = "${DOCKERHUB_USER}/health-api:${BUILD_NUMBER}"
-        TEST_PORT      = '8000'   // local port used by port-forward during DAST (Jenkins itself uses 8080)
+        DOCKERHUB_USER = 'pranav4dit'
+        IMAGE = "pranav4dit/health-api:${BUILD_NUMBER}"
     }
 
     stages {
 
         stage('Checkout') {
-            steps { checkout scm }
+            steps {
+                checkout scm
+            }
         }
 
-        // 1. Secrets must never reach Git history
         stage('Secret Scan - Gitleaks') {
             steps {
-                sh '''
-                    docker run --rm -v "$PWD:/repo" --entrypoint sh zricethezav/gitleaks:latest -c \
-                      "git config --global --add safe.directory /repo && gitleaks detect --source /repo --exit-code 1 --redact --no-banner"
+                bat '''
+                docker run --rm -v "%WORKSPACE%:/repo" ^
+                  --entrypoint gitleaks zricethezav/gitleaks:latest ^
+                  git /repo --redact
                 '''
             }
         }
 
         stage('Unit Tests') {
             steps {
-                sh 'bash scripts/pyrun.sh "pip install --user -q -r src/requirements.txt -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider --junitxml=test-results.xml"'
+                bat '''
+                python -m pip install -r src/requirements.txt -r requirements-dev.txt
+                python -m pytest -q -p no:cacheprovider --junitxml=test-results.xml
+                '''
             }
-            post { always { junit allowEmptyResults: true, testResults: 'test-results.xml' } }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'test-results.xml'
+                }
+            }
         }
 
-        // 2. SAST - look for insecure code patterns without running the app
         stage('SAST - Bandit') {
             steps {
-                sh 'bash scripts/pyrun.sh "pip install --user -q bandit && python -m bandit -r src -ll"'
+                bat '''
+                python -m pip install bandit
+                python -m bandit -r src -ll
+                '''
             }
         }
 
-        stage('SAST - SonarQube') {
-            when { expression { params.RUN_SONAR } }
-            steps {
-                withSonarQubeEnv('sonar') {
-                    sh '''
-                        docker run --rm --network host -u "$(id -u):$(id -g)" \
-                          -e SONAR_HOST_URL="$SONAR_HOST_URL" -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-                          -v "$PWD:/usr/src" sonarsource/sonar-scanner-cli
-                    '''
-                }
-                timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
-            }
-        }
-
-        // 3. SCA - known CVEs in third-party libraries
         stage('SCA - pip-audit') {
             steps {
-                sh 'bash scripts/pyrun.sh "pip install --user -q pip-audit && python -m pip_audit -r src/requirements.txt"'
+                bat '''
+                python -m pip install pip-audit
+                python -m pip_audit -r src/requirements.txt
+                '''
             }
         }
 
-        // 4. IaC scan - Dockerfile + Kubernetes manifests
-        //    Skipped checks (documented in README): CKV_K8S_43 image digest,
-        //    CKV_K8S_35 secrets via env (we use secretRef), CKV_K8S_21 namespace chosen at deploy time (-n)
         stage('Config Scan - Checkov') {
             steps {
-                sh '''
-                    docker run --rm -v "$PWD:/src" bridgecrew/checkov:latest -d /src \
-                      --framework dockerfile kubernetes \
-                      --skip-check CKV_K8S_43,CKV_K8S_35,CKV_K8S_21 \
-                      --quiet --compact
+                bat '''
+                docker run --rm -v "%WORKSPACE%:/src" bridgecrew/checkov:latest ^
+                  -d /src --framework dockerfile kubernetes --quiet --compact
                 '''
             }
         }
 
         stage('Build Image') {
-            steps { sh 'docker build -t "$IMAGE" .' }
+            steps {
+                bat 'docker build -t %IMAGE% .'
+            }
         }
 
-        // 5. Container scan - fail on fixable HIGH/CRITICAL vulnerabilities
         stage('Image Scan - Trivy') {
             steps {
-                sh '''
-                    docker run --rm \
-                      -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v trivy-cache:/root/.cache/ \
-                      aquasec/trivy:latest image \
-                      --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress "$IMAGE"
+                bat '''
+                docker save -o health-api.tar %IMAGE%
+                docker run --rm -v "%WORKSPACE%:/work" aquasec/trivy:latest ^
+                  image --input /work/health-api.tar ^
+                  --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed
                 '''
             }
         }
 
         stage('Push Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub',
-                                                  usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-                    sh '''
-                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-                        docker push "$IMAGE"
-                        docker logout
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_PASS'
+                    )
+                ]) {
+                    bat '''
+                    echo %DH_PASS%| docker login -u %DH_USER% --password-stdin
+                    docker push %IMAGE%
+                    docker logout
                     '''
                 }
             }
         }
 
         stage('Deploy to TEST') {
-            steps { script { withKube { deployTo('health-test') } } }
+            steps {
+                withCredentials([
+                    file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')
+                ]) {
+                    powershell '''
+                    kubectl apply -f k8s/app/pvc.yaml -n health-test
+                    kubectl apply -f k8s/app/service.yaml -n health-test
+
+                    $manifest = Get-Content k8s/app/deployment.yaml -Raw
+                    $manifest = $manifest.Replace("health-api:local", $env:IMAGE)
+                    $manifest = $manifest.Replace("your-dockerhub-username/health-api:0.0.0", $env:IMAGE)
+                    $manifest = $manifest -replace "imagePullPolicy: IfNotPresent", "imagePullPolicy: Always"
+
+                    $manifest | Set-Content deployment-ci.yaml
+                    kubectl apply -f deployment-ci.yaml -n health-test
+                    kubectl rollout status deployment/health-api -n health-test --timeout=180s
+
+                    if ($LASTEXITCODE -ne 0) { throw "TEST deployment failed" }
+                    '''
+                }
+            }
         }
 
-        // 6. DAST - attack the RUNNING app in the test namespace
         stage('DAST - OWASP ZAP') {
             steps {
-                script {
-                    withKube {
-                        sh '''
-                            mkdir -p zap-out && chmod 777 zap-out
-                            kubectl -n health-test port-forward svc/health-api ${TEST_PORT}:80 > pf.log 2>&1 &
-                            echo $! > pf.pid
-                            for i in $(seq 1 15); do curl -fs http://localhost:${TEST_PORT}/health >/dev/null && break; sleep 2; done
+                powershell '''
+                New-Item -ItemType Directory -Force zap-out | Out-Null
 
-                            set +e
-                            docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" \
-                              ghcr.io/zaproxy/zaproxy:stable \
-                              zap-baseline.py -t http://localhost:${TEST_PORT} -r zap-report.html
-                            rc=$?
-                            set -e
+                $pf = Start-Process kubectl `
+                    -ArgumentList "port-forward -n health-test svc/health-api 8000:80" `
+                    -PassThru -WindowStyle Hidden
 
-                            kill $(cat pf.pid) 2>/dev/null || true
-                            # ZAP exit codes: 0 pass, 1 FAIL alerts, 2 warnings only, 3+ error
-                            if [ "$rc" -eq 1 ] || [ "$rc" -ge 3 ]; then exit "$rc"; fi
-                        '''
+                try {
+                    Start-Sleep -Seconds 5
+
+                    docker run --rm -v "${env:WORKSPACE}\\zap-out:/zap/wrk" `
+                        ghcr.io/zaproxy/zaproxy:stable `
+                        zap-baseline.py -t http://host.docker.internal:8000 `
+                        -r zap-report.html
+
+                    if ($LASTEXITCODE -eq 1 -or $LASTEXITCODE -ge 3) {
+                        throw "OWASP ZAP security scan failed"
                     }
                 }
+                finally {
+                    Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue
+                }
+                '''
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'zap-out/*.html', allowEmptyArchive: true
-                    sh 'if [ -f pf.pid ]; then kill $(cat pf.pid) 2>/dev/null || true; fi'
                 }
             }
         }
+
+        stage('Approve and Deploy PROD') {
+            steps {
+                input message: 'Approve production deployment?', ok: 'Deploy'
+
+                withCredentials([
+                    file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')
+                ]) {
+                    powershell '''
+                    kubectl apply -f k8s/app/pvc.yaml -n health-prod
+                    kubectl apply -f k8s/app/service.yaml -n health-prod
+
+                    $manifest = Get-Content k8s/app/deployment.yaml -Raw
+                    $manifest = $manifest.Replace("health-api:local", $env:IMAGE)
+                    $manifest = $manifest.Replace("your-dockerhub-username/health-api:0.0.0", $env:IMAGE)
+                    $manifest = $manifest -replace "imagePullPolicy: IfNotPresent", "imagePullPolicy: Always"
+
+                    $manifest | Set-Content deployment-prod.yaml
+                    kubectl apply -f deployment-prod.yaml -n health-prod
+                    kubectl rollout status deployment/health-api -n health-prod --timeout=180s
+
+                    if ($LASTEXITCODE -ne 0) { throw "PROD deployment failed" }
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Healthcare DevSecOps pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed. Check the stage logs.'
+        }
+    }
+}
+
 
         // 7. Production only from main, and only after a human approves
         stage('Approve & Deploy to PROD') {
