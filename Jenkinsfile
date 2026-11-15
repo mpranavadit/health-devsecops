@@ -107,9 +107,16 @@ pipeline {
                     powershell '''
                     $ErrorActionPreference = "Stop"
 
-                    $env:DH_PASS | docker login --username $env:DH_USER --password-stdin
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Docker Hub login failed"
+                    Write-Host "Docher Hub username : $env:DH_USER"
+                    Write-Host "Docker Hub token present : $([bool])$env:DH_PASS"
+
+                    $LoginOutput = $env:DH_PASS |docker login --username $env:DH_USER --password-stdin 2>&1
+                    $loginExit = $LASTEXITCODE
+
+                    $loginOutput | ForEach-Object { Write-Host $_ }
+
+                    if ($loginExit -ne 0) {
+                        throw "Docker Hub login failed with exit code $loginExit"
                     }
 
                     try {
@@ -125,7 +132,7 @@ pipeline {
                         $digest = $null
 
                         foreach ($line in $pushOutput) {
-                            if ("$line" -match 'digest:\\s*(sha256:[0-9a-f]{64})') {
+                            if ("$line" -match 'digest:\s*(sha256:[0-9a-f]{64})'') {
                                 $digest = $Matches[1]
                             }
                         }
@@ -134,7 +141,7 @@ pipeline {
                             throw "Could not retrieve Docker image digest"
                         }
 
-                        $imageRef = "$env:DOCKERHUB_USER/health-api@$digest"
+                        $imageRef = "$env:DH_USER/health-api@$digest"
 
                         [System.IO.File]::WriteAllText(
                             "image-ref.txt",
