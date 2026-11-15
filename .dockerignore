@@ -1,0 +1,13 @@
+.git
+.gitignore
+tests
+k8s
+scripts
+Jenkinsfile
+*.md
+requirements-dev.txt
+sonar-project.properties
+.pre-commit-config.yaml
+.gitleaks.toml
+jenkins-kubeconfig.yaml
+zap-out

@@ -1,0 +1,7 @@
+# Gitleaks config: use the default rules, ignore dummy credentials used only in unit tests.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Unit-test fixtures use dummy values"
+paths = ['''tests/''']

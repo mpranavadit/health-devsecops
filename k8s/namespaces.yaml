@@ -1,0 +1,17 @@
+# Pod Security Admission "restricted" blocks root containers, privilege escalation,
+# host access etc. at the cluster level - a second line of defence behind our manifests.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: health-test
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: health-prod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

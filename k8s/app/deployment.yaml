@@ -1,0 +1,80 @@
+# The image below is a placeholder: the Jenkins pipeline replaces it with the
+# freshly built, scanned image (youruser/health-api:<BUILD_NUMBER>). Do not edit.
+#
+# replicas: 1 + Recreate because the demo uses SQLite on a ReadWriteOnce volume.
+# For high availability switch to PostgreSQL and raise replicas / use RollingUpdate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-api
+  labels:
+    app: health-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: health-api
+  template:
+    metadata:
+      labels:
+        app: health-api
+    spec:
+      automountServiceAccountToken: false       # app does not talk to the K8s API
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001                          # makes the mounted volume writable by the app user
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: health-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DB_PATH
+              value: /data/health.db
+          envFrom:
+            - secretRef:
+                name: app-secrets               # JWT_SECRET, FIELD_ENCRYPTION_KEY, SEED_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp                   # gunicorn needs a writable /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: health-data
+        - name: tmp
+          emptyDir: {}

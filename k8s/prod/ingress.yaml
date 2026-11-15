@@ -1,0 +1,24 @@
+# TLS termination (encryption in transit). The secret 'health-tls' is created by scripts/setup-cluster.sh
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: health-ingress
+  namespace: health-prod
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["health.local"]
+      secretName: health-tls
+  rules:
+    - host: health.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: health-api
+                port:
+                  number: 80
