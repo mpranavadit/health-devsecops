@@ -69,7 +69,6 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 bat '''
-                bat '''
                 python -m pip uninstall -y jwt
                 python -m pip install --force-reinstall PyJWT==2.10.1
                 python -m pip install -r src/requirements.txt -r requirements-dev.txt
