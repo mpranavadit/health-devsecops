@@ -89,6 +89,7 @@ pipeline {
                 docker save -o health-api.tar %IMAGE%
                 docker run --rm -v "%WORKSPACE%:/work" aquasec/trivy:latest ^
                   image --input /work/health-api.tar ^
+                  --scanners vuln ^
                   --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed
                 '''
             }

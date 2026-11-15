@@ -1,21 +1,27 @@
-FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
+# Update Debian packages to receive security fixes
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
+# Update Python packaging tools
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN rm -f /usr/local/lib/python3.11/site-packages/pip/_vendor/bom.cdx.json
+# Install application dependencies
 COPY src/requirements.txt .
 RUN python -m pip install --no-cache-dir --index-url https://pypi.org/simple -r requirements.txt
 
 COPY src/ .
 
-# Non-root user with a numeric UID (lets Kubernetes verify runAsNonRoot)
+# Non-root user
 RUN useradd --no-create-home --uid 10001 --shell /usr/sbin/nologin appuser \
- && mkdir /data && chown 10001:10001 /data
+ && mkdir -p /data \
+ && chown 10001:10001 /data
+
 USER 10001
 
 EXPOSE 8000
