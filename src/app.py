@@ -23,6 +23,13 @@ from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+def read_secret(name):
+    secret_file = os.environ.get(f"{name}_FILE")
+    if secret_file:
+        with open(secret_file, "r", encoding="utf-8") as file:
+            return file.read().strip()
+    return os.environ.get(name, "")
+
 DB_PATH = os.environ.get("DB_PATH", "/data/health.db")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 FIELD_KEY = os.environ.get("FIELD_ENCRYPTION_KEY", "")

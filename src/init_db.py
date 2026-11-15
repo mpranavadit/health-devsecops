@@ -48,7 +48,12 @@ def init():
     try:
         conn.executescript(SCHEMA)
 
-        seed_password = os.environ.get("SEED_PASSWORD", "")
+        seed_password_file = os.environ.get("SEED_PASSWORD_FILE")
+        if seed_password_file:
+            with open(seed_password_file, "r", encoding="utf-8") as file:
+                seed_password = file.read().strip()
+        else:
+            seed_password = os.environ.get("SEED_PASSWORD", "")
         if seed_password and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             pw_hash = bcrypt.hashpw(seed_password.encode()[:72], bcrypt.gensalt()).decode()
             conn.executemany(

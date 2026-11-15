@@ -40,9 +40,20 @@ spec:
           env:
             - name: DB_PATH
               value: /data/health.db
-          envFrom:
-            - secretRef:
-                name: app-secrets               # JWT_SECRET, FIELD_ENCRYPTION_KEY, SEED_PASSWORD
+            - name: JWT_SECRET_FILE
+              value: /run/secrets/JWT_SECRET
+            - name: FIELD_ENCRYPTION_KEY_FILE
+              value: /run/secrets/FIELD_ENCRYPTION_KEY
+            - name: SEED_PASSWORD_FILE
+              value: /run/secrets/SEED_PASSWORD
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -68,12 +79,11 @@ spec:
               port: 8000
             initialDelaySeconds: 15
             periodSeconds: 20
-          volumeMounts:
-            - name: data
-              mountPath: /data
-            - name: tmp
-              mountPath: /tmp                   # gunicorn needs a writable /tmp
+
       volumes:
+        - name: secrets
+          secret:
+            secretName: app-secrets
         - name: data
           persistentVolumeClaim:
             claimName: health-data
