@@ -97,7 +97,7 @@ pipeline {
             steps {
                 bat '''
                 python -m pip install pip-audit
-                python -m pip_audit -r src/requirements.txt --timeout 60
+                python -m pip_audit -r src/requirements.txt --timeout 60 --progress-spinner off
                 '''
             }
         }
