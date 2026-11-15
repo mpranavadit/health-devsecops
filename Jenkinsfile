@@ -11,7 +11,6 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_USER = 'pranav4dit'
         IMAGE = "pranav4dit/health-api:${BUILD_NUMBER}"
     }
 
@@ -87,6 +86,7 @@ pipeline {
             steps {
                 bat '''
                 docker save -o health-api.tar %IMAGE%
+
                 docker run --rm -v "%WORKSPACE%:/work" aquasec/trivy:latest ^
                   image --input /work/health-api.tar ^
                   --scanners vuln ^
@@ -95,126 +95,33 @@ pipeline {
             }
         }
 
-        // TEMPORARY DIAGNOSTIC STAGE
-        stage('Test Docker Hub Credentials') {
+        stage('Load Image into Minikube') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub',
-                        usernameVariable: 'DH_USER',
-                        passwordVariable: 'DH_PASS'
-                    )
-                ]) {
-                    powershell '''
-                    Write-Host "Docker Hub username: $env:DH_USER"
-                    Write-Host "Token length: $($env:DH_PASS.Length)"
-                    Write-Host "Token starts/ends with whitespace: $([bool]($env:DH_PASS -ne $env:DH_PASS.Trim()))"
-                    '''
-                }
-            }
-        }
+                powershell '''
+                $ErrorActionPreference = "Stop"
 
-        stage('Push Image and Capture Digest') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub',
-                        usernameVariable: 'DH_USER',
-                        passwordVariable: 'DH_PASS'
-                    )
-                ]) {
-                    powershell '''
-                    $ErrorActionPreference = "Stop"
+                Write-Host "Checking Minikube status..."
 
-                    Write-Host "Docker Hub username: $env:DH_USER"
-                    Write-Host "Docker Hub token present: $([bool]$env:DH_PASS)"
-
-                    $dockerPath = (Get-Command docker.exe).Source
-
-                    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-                    $processInfo.FileName = $dockerPath
-                    $processInfo.Arguments = "login --username `"$env:DH_USER`" --password-stdin"
-                    $processInfo.UseShellExecute = $false
-                    $processInfo.CreateNoWindow = $true
-                    $processInfo.RedirectStandardInput = $true
-                    $processInfo.RedirectStandardOutput = $true
-                    $processInfo.RedirectStandardError = $true
-
-                    $process = New-Object System.Diagnostics.Process
-                    $process.StartInfo = $processInfo
-
-                    [void]$process.Start()
-
-                    $tokenBytes = [System.Text.Encoding]::UTF8.GetBytes($env:DH_PASS + "`n")
-                    $process.StandardInput.BaseStream.Write(
-                        $tokenBytes, 0, $tokenBytes.Length
-                    )
-                    $process.StandardInput.Close()
-
-                    $loginOutput = $process.StandardOutput.ReadToEnd()
-                    $loginError = $process.StandardError.ReadToEnd()
-
-                    $process.WaitForExit()
-
-                    if ($loginOutput) {
-                        Write-Host $loginOutput
-                    }
-
-                    if ($loginError) {
-                        Write-Host $loginError
-                    }
-
-                    if ($process.ExitCode -ne 0) {
-                        throw "Docker Hub login failed with exit code $($process.ExitCode)"
-                    }
-
-                    Write-Host "Docker Hub login successful."
-
-                    try {
-                        $pushOutput = & docker push $env:IMAGE 2>&1
-                        $pushExit = $LASTEXITCODE
-
-                        $pushOutput | ForEach-Object {
-                            Write-Host $_
-                        }
-
-                        if ($pushExit -ne 0) {
-                            throw "Docker image push failed"
-                        }
-
-                        $digest = $null
-
-                        foreach ($line in $pushOutput) {
-                            if ("$line" -match 'digest: (sha256:[0-9a-f]{64})') {
-                                $digest = $Matches[1]
-                            }
-                        }
-
-                        if (-not $digest) {
-                            throw "Could not retrieve Docker image digest"
-                        }
-
-                        $imageRef = "$env:DH_USER/health-api@$digest"
-
-                        [System.IO.File]::WriteAllText(
-                            "image-ref.txt",
-                            $imageRef,
-                            [System.Text.Encoding]::ASCII
-                        )
-
-                        Write-Host "Image digest captured successfully."
-                        Write-Host $imageRef
-                    }
-                    finally {
-                        docker logout
-                    }
-                    '''
+                minikube status
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Minikube is unavailable"
                 }
 
-                script {
-                    env.IMAGE_REF = readFile('image-ref.txt').trim()
-                    echo "Immutable deployment image: ${env.IMAGE_REF}"
+                Write-Host "Loading application image into Minikube..."
+
+                minikube image load $env:IMAGE
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to load image into Minikube"
                 }
+
+                Write-Host "Verifying image..."
+
+                minikube image ls | Select-String "health-api"
+
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Image verification failed"
+                }
+                '''
             }
         }
 
@@ -227,11 +134,21 @@ pipeline {
 
                 $manifest = $manifest.Replace(
                     "health-api:local",
-                    $env:IMAGE_REF
+                    $env:IMAGE
                 )
 
-                if ($manifest -notmatch [regex]::Escape($env:IMAGE_REF)) {
-                    throw "Digest image replacement failed"
+                $manifest = $manifest.Replace(
+                    "imagePullPolicy: Always",
+                    "imagePullPolicy: Never"
+                )
+
+                $manifest = $manifest.Replace(
+                    "imagePullPolicy: IfNotPresent",
+                    "imagePullPolicy: Never"
+                )
+
+                if ($manifest -notmatch [regex]::Escape($env:IMAGE)) {
+                    throw "Image replacement failed"
                 }
 
                 New-Item -ItemType Directory -Force ci-manifests | Out-Null
@@ -241,6 +158,8 @@ pipeline {
                     $manifest,
                     [System.Text.UTF8Encoding]::new($false)
                 )
+
+                Write-Host "Prepared local Minikube deployment manifest."
                 '''
             }
         }
@@ -263,14 +182,19 @@ pipeline {
                     powershell '''
                     $ErrorActionPreference = "Stop"
 
+                    kubectl get nodes
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Kubernetes connection failed"
+                    }
+
                     kubectl apply -f k8s/app/pvc.yaml -n health-test
                     if ($LASTEXITCODE -ne 0) {
-                        throw "TEST PVC failed"
+                        throw "TEST PVC deployment failed"
                     }
 
                     kubectl apply -f k8s/app/service.yaml -n health-test
                     if ($LASTEXITCODE -ne 0) {
-                        throw "TEST Service failed"
+                        throw "TEST Service deployment failed"
                     }
 
                     kubectl apply -f ci-manifests/deployment.yaml -n health-test
@@ -282,6 +206,8 @@ pipeline {
                     if ($LASTEXITCODE -ne 0) {
                         throw "TEST rollout failed"
                     }
+
+                    kubectl get pods -n health-test
                     '''
                 }
             }
@@ -362,12 +288,12 @@ pipeline {
 
                     kubectl apply -f k8s/app/pvc.yaml -n health-prod
                     if ($LASTEXITCODE -ne 0) {
-                        throw "PROD PVC failed"
+                        throw "PROD PVC deployment failed"
                     }
 
                     kubectl apply -f service-prod.yaml -n health-prod
                     if ($LASTEXITCODE -ne 0) {
-                        throw "PROD Service failed"
+                        throw "PROD Service deployment failed"
                     }
 
                     kubectl apply -f deployment-prod.yaml -n health-prod
@@ -379,6 +305,8 @@ pipeline {
                     if ($LASTEXITCODE -ne 0) {
                         throw "PROD rollout failed"
                     }
+
+                    kubectl get pods -n health-prod
                     '''
                 }
             }
